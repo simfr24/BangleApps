@@ -1,0 +1,17 @@
+{
+    "id"        : "tll",
+    "name"      : "Train Log Logger",
+    "shortName" : "TLL",
+    "version"   : "0.01",
+    "description":
+      "Lightweight GPS logger that stores GPX tracks (10 s sampling) and lets you pull them over the console.",
+    "icon"      : "tll.png",
+    "tags"      : "gps,logger,track",
+    "supports"  : ["BANGLEJS2"],
+    "readme"    : "README.md",
+    "storage" : [
+      { "name": "tll.app.js",  "url": "app.js"           },
+      { "name": "tll.img",     "url": "app-icon.js", "evaluate": true }
+    ]
+  }
+  

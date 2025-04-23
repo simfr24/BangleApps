@@ -1,0 +1,4 @@
+## 0.01  (2025-04-23)
+* first public release
+  – 10 s sampling interval
+  – console helpers listGPX / getGPX
