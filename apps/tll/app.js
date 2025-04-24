@@ -7,7 +7,7 @@
  ****************************************************************/
 
 /* ───────────────────── configuration ─────────────────────── */
-const HDOP_THRESHOLD = 5.0;      // only log if hdop ≤ this value
+const HDOP_THRESHOLD = 2.5;      // only log if hdop ≤ this value
 const LOG_INTERVAL   = 10000;    // ms between logged points
 const PREC_FACTOR    = 1e5;      // lat/lon kept to 5 dp (≈1 m)
 const INIT_POINTS    = 4096;     // initial buffer, doubles when full
