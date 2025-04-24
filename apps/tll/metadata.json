@@ -2,7 +2,7 @@
     "id"        : "tll",
     "name"      : "Train Log Logger",
     "shortName" : "TLL",
-    "version"   : "0.01",
+    "version"   : "0.02",
     "description":
       "Lightweight GPS logger that stores GPX tracks (10 s sampling) and lets you pull them over the console.",
     "icon"      : "tll.png",

@@ -1,26 +1,24 @@
 /****************************************************************
- * trainloglogger  –  Bangle.js 2  (stripped: no custom BLE)
+ * trainloglogger – Bangle.js 2
  * -------------------------------------------------------------
- * • Logs GPS points and stores them as GPX
- * • Console helpers for browser:
- *       listGPX();          // JSON list   + <<<END>>>
- *       getGPX("file");     // file text   + <<<END>>>
+ * Logs GPS points as GPX (stream‑written to flash)
+ * Shows elapsed time, point count, satellites, HDOP, and SPEED.
  ****************************************************************/
 
-echo(0);
-
 /* ─────────────────────────  configuration  ────────────────── */
-const HDOP_THRESHOLD = 5.0;      // log only if hdop ≤ this
+const HDOP_THRESHOLD = 5.0;   // log only if hdop ≤ this value
+const LOG_INTERVAL   = 10000; // ms between logged points
 
-/* ─────────────────────────  variables  ────────────────────── */
-let gpsPoints   = [];
+/* ─────────────────────────  runtime vars  ─────────────────── */
 let isRecording = false;
 let startTime;
 let lastFix     = null;
-let lastFixTime = null;
 let currentTime = new Date();
+let touchHandler, gpsListener;
+let logFile, logFileName;
+let pointCount  = 0;          // keep only the count in RAM
 
-/* ─────────────────────────  small helpers  ────────────────── */
+/* ─────────────────────────  helpers  ──────────────────────── */
 function iso(d){ return d.toISOString().replace(/\.\d{3}Z$/, "Z"); }
 function hms(a,b){ const s=(b-a)/1000|0,h=s/3600|0,m=s%3600/60|0;
   return `${h}`.padStart(2,"0")+":"+`${m}`.padStart(2,"0")+":"+`${s%60}`.padStart(2,"0"); }
@@ -29,126 +27,105 @@ function nextNum(){
     .reduce((n,f)=>Math.max(n,parseInt(f.match(/\d+/)[0],10)),0)+1;
 }
 
-/* ─────────────────────────  GPX builder  ──────────────────── */
-function makeGPX(){
-  if(!gpsPoints.length) return "";
-  let gpx = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="trainloglogger" xmlns="http://www.topografix.com/GPX/1/1">
-  <trk><name>Training ${iso(startTime).split("T")[0]}</name><trkseg>`;
-  gpsPoints.forEach(p=>{
-    gpx += `
-    <trkpt lat="${p.lat}" lon="${p.lon}">
-      <ele>${p.alt||0}</ele>
-      <time>${iso(p.time)}</time>
-      <hdop>${p.hdop||0}</hdop>
-    </trkpt>`;
-  });
-  return gpx + `
-  </trkseg></trk>
-</gpx>`;
-}
-
 /* ─────────────────────────  display  ──────────────────────── */
 function updateDisplay(){
   g.clear();
   g.setFont("6x8",1).setFontAlign(0,0).drawString("TLL", g.getWidth()/2, 12);
 
-  g.setFont("6x8",2);
-  g.drawString(hms(startTime,currentTime),         g.getWidth()/2, 50);
-  g.drawString(`Points: ${gpsPoints.length}`,      g.getWidth()/2, 80);
+  if(isRecording){
+    g.setFont("6x8",2);
+    g.drawString(hms(startTime,currentTime), g.getWidth()/2, 50);
+    g.drawString(`Points: ${pointCount}`,    g.getWidth()/2, 80);
 
-  if(lastFixTime){
+    /* ── Speed line (km/h) ── */
+    const speedKmh = (lastFix && lastFix.speed!=null) ? (lastFix.speed*3.6).toFixed(1) : "--.-";
     g.setFont("6x8",1);
-    g.drawString(`Last fix: ${((currentTime-lastFixTime)/1000|0)}s`, g.getWidth()/2, 110);
-  }
-  g.drawString("Tap to stop", g.getWidth()/2, 130);
+    g.drawString(`Speed: ${speedKmh} km/h`, g.getWidth()/2, 110);
 
-  if(lastFix){
-    g.setFont("6x8",1).setFontAlign(-1,0).drawString(`Sats: ${lastFix.satellites||0}`, 5, g.getHeight()-10);
-    if(lastFix.hdop!==undefined){
-      g.setFontAlign(1,0)
-       .setColor(lastFix.hdop<=HDOP_THRESHOLD ? [0,1,0] : [1,0,0])
-       .drawString(`HDOP: ${lastFix.hdop.toFixed(1)}`, g.getWidth()-5, g.getHeight()-10)
-       .setColor(1);
+    g.drawString("Tap to stop", g.getWidth()/2, 130);
+
+    /* bottom‑line satellite/HDOP info */
+    if(lastFix){
+      g.setFont("6x8",1).setFontAlign(-1,0).drawString(`Sats: ${lastFix.satellites||0}`, 5, g.getHeight()-10);
+      if(lastFix.hdop!==undefined){
+        g.setFontAlign(1,0)
+         .setColor(lastFix.hdop<=HDOP_THRESHOLD ? [0,1,0] : [1,0,0])
+         .drawString(`HDOP: ${lastFix.hdop.toFixed(1)}`, g.getWidth()-5, g.getHeight()-10)
+         .setColor(1);
+      }
     }
   }
+}
+
+function showMsg(m){
+  g.clear();
+  g.setFont("6x8",2).setFontAlign(0,0).drawString(m, g.getWidth()/2, g.getHeight()/2);
+  setTimeout(showMenu, 2000);
 }
 
 /* ─────────────────────────  recording  ────────────────────── */
 function startRecording(){
   if(isRecording) return;
-  Bangle.setGPSPower(1);
-  gpsPoints=[]; isRecording=true; startTime=new Date(); updateDisplay();
-  let lastLogTime = 0;
+  E.showMenu();               // hide menu so touches don’t leak through
 
-  Bangle.on("GPS", gps => {
+  isRecording = true;
+  startTime   = new Date();
+  pointCount  = 0;
+
+  logFileName = `tll_${nextNum()}.gpx`;
+  logFile     = require("Storage").open(logFileName, "w");
+  logFile.write(`<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx version=\"1.1\" creator=\"trainloglogger\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n  <trk><name>Training ${iso(startTime).split("T")[0]}</name><trkseg>`);
+
+  /* touch handler only active while recording */
+  touchHandler = ()=> stopRecording();
+  Bangle.on("touch", touchHandler);
+
+  /* GPS callback */
+  let lastLogTime = 0;
+  gpsListener = gps => {
     lastFix = gps;
-    if (gps.fix) {
-      lastFixTime = new Date();
+    if(gps.fix){
       const now = Date.now();
-  
-      if (
-        (gps.hdop === undefined || gps.hdop <= HDOP_THRESHOLD) &&
-        (now - lastLogTime >= 10000)
-      ) {
-        gpsPoints.push({
-          lat: gps.lat,
-          lon: gps.lon,
-          alt: gps.alt,
-          hdop: gps.hdop,
-          time: new Date()
-        });
-        lastLogTime = now; // update only when we actually logged a point
+      if((gps.hdop===undefined || gps.hdop<=HDOP_THRESHOLD) && (now-lastLogTime>=LOG_INTERVAL)){
+        logFile.write(`\n    <trkpt lat=\"${gps.lat}\" lon=\"${gps.lon}\"><ele>${gps.alt||0}</ele><time>${iso(new Date())}</time><hdop>${gps.hdop||0}</hdop></trkpt>`);
+        pointCount++; lastLogTime = now;
       }
     }
     updateDisplay();
-  });
+  };
+  Bangle.on("GPS", gpsListener);
+  Bangle.setGPSPower(1);
+  updateDisplay();
 }
 
 function stopRecording(){
   if(!isRecording) return;
-  isRecording=false;
+  if(Date.now() - startTime < 2000 && pointCount === 0){ // debounce first seconds
+    showMsg("Waiting for GPS …");
+    return;
+  }
+
+  isRecording = false;
   Bangle.setGPSPower(0);
-  Bangle.removeAllListeners("GPS");
+  Bangle.removeListener("GPS", gpsListener);
+  Bangle.removeListener("touch", touchHandler);
 
-  if (gpsPoints.length) {
-    let xml = makeGPX();
-    xml = xml.replace(/\s{2,}/g, "");     // collapse runs of 2+ spaces
-    xml = xml.replace(/>\s+</g, "><");    // remove space between tags
-    xml = xml.trim();                     // remove leading/trailing whitespace
-    require("Storage").write(`tll_${nextNum()}.gpx`, xml);
-    showMsg("Track saved");
-  } else showMsg("No data recorded");
+  logFile.write("\n  </trkseg></trk>\n</gpx>");
+  logFile = undefined;
+
+  showMsg(pointCount ? `Track saved\n${pointCount} points` : "No data recorded");
 }
 
-/* ─────────────────────────  console helpers  ──────────────── */
-function _send(txt){ Bluetooth.println(txt); Bluetooth.println("<<<END>>>"); }
-
-global.listGPX = function(){
-  _send(JSON.stringify(require("Storage").list(/\.gpx$/)));
-};
-
-global.getGPX = function(name){
-  const d = require("Storage").read(name);
-  _send(d!==undefined ? d : "ERROR: File not found");
-};
-
-/* ─────────────────────────  simple UI  ────────────────────── */
-function showMsg(m){ g.clear(); g.setFont("6x8",2).setFontAlign(0,0)
-  .drawString(m, g.getWidth()/2, g.getHeight()/2);
-  setTimeout(showMenu, 2000);
-}
-
+/* ─────────────────────────  menu & init  ─────────────────── */
 function showMenu(){
   E.showMenu({
     "":{title:"TLL"},
     "Start Recording": startRecording,
-    "Exit":             ()=>Bangle.showLauncher()
+    "Exit": ()=>Bangle.showLauncher()
   });
 }
 
-/* ─────────────────────────  init  ─────────────────────────── */
-Bangle.loadWidgets(); Bangle.drawWidgets();
+Bangle.loadWidgets();
+Bangle.drawWidgets();
 showMenu();
-Bangle.on("touch",()=>{ if(isRecording) stopRecording(); });
 setInterval(()=>{ currentTime=new Date(); if(isRecording) updateDisplay(); },1000);
